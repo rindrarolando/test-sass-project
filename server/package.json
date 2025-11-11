@@ -2,8 +2,8 @@
   "name": "server",
   "scripts": {
     "lint": "exit 0",
-    "build": "tsc --noEmit --strict && echo 'Build TypeScript check'",
-    "build:watch": "echo 'Build watch simulé' && exit 0",
+    "build": "tsc && echo 'Build TypeScript completed'",
+    "build:watch": "tsc --watch",
     "shell": "echo 'Shell simulé' && exit 0",
     "start": "echo 'Start simulé' && exit 0",
     "deploy": "bash ../scripts/deploy.sh",
@@ -12,7 +12,7 @@
   "engines": {
     "node": "22"
   },
-  "main": "lib/server/index.js",
+  "main": "lib/index.js",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.821.0",
     "@aws-sdk/s3-request-presigner": "^3.823.0",
