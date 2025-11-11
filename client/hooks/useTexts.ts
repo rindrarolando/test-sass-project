@@ -25,8 +25,7 @@ export function useTexts() {
   // ✅ Mutation création avec gestion cache
   const createMutation = useMutation({
     mutationFn: (data: CreateTextRequest) => {
-      const textService = new TextService();
-      return textService.createText(currentWorkspaceId, data);
+      return TextService.createText(currentWorkspaceId, data);
     },
     onSuccess: (newText) => {
       // Ajouter le nouveau texte au cache

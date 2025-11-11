@@ -5,6 +5,8 @@ import { validateRequiredFields, isSuccess, handleError } from '../utils/validat
 import { createResponseWithTokens } from '../../shared/responses.js';
 import { getTextRepository } from '../../db/repositories/index.js';
 import { WORKSPACE_ROLES } from '../../../shared/types.js';
+import { ERRORS, withDetails } from '../../shared/types/errors.js';
+import { validateTextData, validateTextUpdate } from '../utils/validation/textValidation.js';
 
 /**
  * Service de gestion des textes
@@ -42,18 +44,19 @@ export const createText = onCall({
     const { workspace_id, workspace_tokens } = validationResult;
     const response = createResponseWithTokens(workspace_tokens);
 
-    // ✅ 4. Validation métier spécifique
-    if (content.length > 1000) {
-      return response.error({
-        code: 'INVALID_INPUT',
-        message: 'Le contenu ne peut pas dépasser 1000 caractères'
-      });
+    // ✅ 4. Validation métier spécifique (séparée)
+    const textValidation = validateTextData({ title, content });
+    if (!textValidation.valid) {
+      return response.error(withDetails(ERRORS.INVALID_INPUT, {
+        message: textValidation.errors.join(', '),
+        errors: textValidation.errors
+      }));
     }
 
     // ✅ 5. Logique métier via repository
     const textData = {
-      content: content.trim(),
       title: title?.trim() || 'Sans titre',
+      content: content.trim(),
       created_by: uid
     };
     
@@ -152,10 +155,9 @@ export const deleteText = onCall({
     const deleted = await getTextRepository().delete(textId, workspace_id);
     
     if (!deleted) {
-      return response.error({
-        code: 'NOT_FOUND',
+      return response.error(withDetails(ERRORS.NOT_FOUND, {
         message: 'Texte non trouvé'
-      });
+      }));
     }
 
     // ✅ 6. Logging succès
@@ -166,6 +168,77 @@ export const deleteText = onCall({
     
   } catch (error) {
     logger.error(`Erreur dans deleteText:`, error);
+    return handleError(error);
+  }
+});
+
+/**
+ * Mettre à jour un texte
+ */
+export const updateText = onCall({
+  memory: '512MiB',
+  timeoutSeconds: 60
+}, async (request) => {
+  try {
+    // ✅ 1. Validation auth OBLIGATOIRE
+    const authResponse = validateAuth(request.auth);
+    if (!isSuccess(authResponse)) return authResponse;
+    const uid = authResponse.user;
+
+    // ✅ 2. Extraction et validation params
+    const { workspaceToken, textId, title, content } = request.data;
+    const validationResponse = validateRequiredFields(request.data, [
+      'workspaceToken', 'textId'
+    ]);
+    if (!isSuccess(validationResponse)) return validationResponse;
+
+    // ✅ 3. Validation workspace + rôles
+    const tokenValidation = await verifyWorkspaceToken(
+      workspaceToken, 
+      uid, 
+      WORKSPACE_ROLES.EDITOR // Rôle requis pour mettre à jour des textes
+    );
+    const validationResult = isValidWorkspaceToken(tokenValidation);
+    if (!isSuccess(validationResult)) return validationResult;
+    const { workspace_id, workspace_tokens } = validationResult;
+    const response = createResponseWithTokens(workspace_tokens);
+
+    // ✅ 4. Validation métier spécifique (séparée)
+    // Récupérer le texte existant pour validation
+    const existingText = await getTextRepository().getById(textId, workspace_id);
+    const textValidation = validateTextUpdate(existingText, { title, content });
+    if (!textValidation.valid) {
+      return response.error(withDetails(ERRORS.INVALID_INPUT, {
+        message: textValidation.errors.join(', '),
+        errors: textValidation.errors
+      }));
+    }
+
+    // ✅ 5. Logique métier via repository
+    const updateData: { title?: string; content?: string } = {};
+    if (title !== undefined) {
+      updateData.title = title.trim();
+    }
+    if (content !== undefined) {
+      updateData.content = content.trim();
+    }
+
+    const updatedText = await getTextRepository().update(textId, workspace_id, updateData);
+    
+    if (!updatedText) {
+      return response.error(withDetails(ERRORS.NOT_FOUND, {
+        message: 'Texte non trouvé'
+      }));
+    }
+
+    // ✅ 6. Logging succès
+    logger.info(`Texte ${textId} mis à jour pour workspace ${workspace_id} par ${uid}`);
+
+    // ✅ 7. Réponse standardisée
+    return response.success({ text: updatedText });
+    
+  } catch (error) {
+    logger.error(`Erreur dans updateText:`, error);
     return handleError(error);
   }
 });

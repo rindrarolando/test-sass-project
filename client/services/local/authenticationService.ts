@@ -1,3 +1,7 @@
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '@/services/api/firebase/config';
+import { auth } from '@/services/api/firebase/config';
+
 // ========================== SERVICE URLS ==========================
 
 export const SERVICE_URL = {
@@ -15,96 +19,150 @@ export interface WorkspaceToken {
 
 export type WorkspaceTokenMap = Record<string, WorkspaceToken>;
 
-// ========================== DONNÉES FANTÔMES ==========================
+// ========================== STORAGE KEYS ==========================
 
-const MOCK_WORKSPACE_TOKENS: WorkspaceTokenMap = {
-  'demo-workspace-123': {
-    role: 'admin',
-    token: 'demo-token-workspace-123'
-  },
-  'demo-workspace-456': {
-    role: 'editor',
-    token: 'demo-token-workspace-456'
+const WORKSPACE_TOKENS_KEY = 'agentova_workspace_tokens';
+
+// ========================== FIREWALL ==========================
+
+interface FirewallEntry {
+  count: number;
+  resetTime: number;
+}
+
+const requestFirewall = new Map<string, FirewallEntry>();
+const MAX_REQUESTS_PER_ENDPOINT = 10;
+const FIREWALL_RESET_TIME = 10000; // 10 secondes
+
+function checkFirewall(functionName: string): boolean {
+  const now = Date.now();
+  const entry = requestFirewall.get(functionName);
+
+  if (!entry || now > entry.resetTime) {
+    requestFirewall.set(functionName, {
+      count: 1,
+      resetTime: now + FIREWALL_RESET_TIME
+    });
+    return true;
   }
-};
 
-// ========================== FONCTIONS FANTÔMES ==========================
+  if (entry.count >= MAX_REQUESTS_PER_ENDPOINT) {
+    return false;
+  }
+
+  entry.count++;
+  return true;
+}
+
+// ========================== TOKEN MANAGEMENT ==========================
 
 /**
  * Récupère le token d'authentification Firebase
- * 🔧 VERSION DEMO - TOUJOURS MÊME TOKEN
  */
 export async function getIdToken(): Promise<string> {
-  // 🔧 FONCTION VIDE - Toujours même token
-  return 'demo-token-123456789';
+  const user = auth.currentUser;
+  if (!user) {
+    throw new Error('User not authenticated');
+  }
+  return await user.getIdToken();
 }
 
 /**
- * Stocke les tokens workspace
- * 🔧 VERSION DEMO - FONCTION VIDE
+ * Stocke les tokens workspace dans localStorage
  */
 export function storeTokens(tokens: WorkspaceTokenMap): void {
-  // 🔧 FONCTION VIDE - Ne fait rien
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(WORKSPACE_TOKENS_KEY, JSON.stringify(tokens));
+    } catch (error) {
+      console.error('Error storing tokens:', error);
+    }
+  }
 }
 
 /**
  * Récupère les tokens workspace stockés
- * 🔧 VERSION DEMO - TOUJOURS MÊMES TOKENS
  */
 export function getStoredTokens(): WorkspaceTokenMap {
-  // 🔧 FONCTION VIDE - Toujours retourner les mêmes tokens
-  return MOCK_WORKSPACE_TOKENS;
+  if (typeof window !== 'undefined') {
+    try {
+      const stored = localStorage.getItem(WORKSPACE_TOKENS_KEY);
+      if (stored) {
+        return JSON.parse(stored);
+      }
+    } catch (error) {
+      console.error('Error retrieving tokens:', error);
+    }
+  }
+  return {};
 }
 
 /**
  * Appelle une fonction Firebase sécurisée
- * 🔧 VERSION DEMO - TOUJOURS SUCCESS
  */
 export async function callSecuredFunction<T>(
   functionName: string,
   workspaceId: string,
   data?: any
 ): Promise<T> {
-  // 🔧 FONCTION VIDE - Toujours simuler un appel réussi
-  return await callFirebaseFunction<T>(functionName, data);
+  // 1️⃣ Firewall check
+  if (!checkFirewall(functionName)) {
+    throw new Error(`🚨 PAREFEU: Trop de requêtes pour ${functionName}`);
+  }
+
+  // 2️⃣ Token workspace
+  const storedTokens = getStoredTokens();
+  const workspaceToken = storedTokens[workspaceId]?.token || null;
+
+  // 3️⃣ Appel Firebase avec token
+  const callable = httpsCallable(functions, functionName);
+  const result = await callable({
+    ...data,
+    workspaceToken
+  });
+
+  const responseData = result.data as { success: boolean; error?: any; workspace_tokens?: WorkspaceTokenMap } & T;
+
+  // 4️⃣ Vérifier si c'est une erreur
+  if (!responseData.success) {
+    const errorMessage = responseData.error?.message || responseData.error?.code || 'Erreur lors de l\'appel à la fonction';
+    throw new Error(errorMessage);
+  }
+
+  // 5️⃣ Mise à jour tokens si reçus
+  if (responseData.workspace_tokens) {
+    storeTokens(responseData.workspace_tokens);
+  }
+
+  // 6️⃣ Extraire les données (enlever success et workspace_tokens)
+  const { success, workspace_tokens: _, ...dataOnly } = responseData;
+  return dataOnly as T;
 }
 
 /**
  * Appelle une fonction Firebase avec SSE
- * 🔧 VERSION DEMO - SIMULATION SIMPLE
  */
 export async function callSecuredSSEFunction(
   functionName: string,
   workspaceId: string,
   data?: any
 ): Promise<Response> {
-  // 🔧 FONCTION VIDE - Simuler un appel SSE simple
+  const workspace_tokens = getStoredTokens();
+  const workspaceToken = workspace_tokens[workspaceId]?.token || null;
+  const idToken = await getIdToken();
+
   return await fetch(`${SERVICE_URL.FASTAPI}/${functionName}`, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${idToken}`
     },
     body: JSON.stringify({
       workspace_id: workspaceId,
+      workspaceToken,
       ...data
     })
   });
-}
-
-/**
- * Fonction Firebase fantôme
- * 🔧 VERSION DEMO - TOUJOURS SUCCESS
- */
-async function callFirebaseFunction<T>(
-  functionName: string,
-  data: any
-): Promise<T> {
-  // 🔧 FONCTION VIDE - Toujours retourner success
-  return {
-    success: true,
-    data: null,
-    workspace_tokens: MOCK_WORKSPACE_TOKENS
-  } as T;
 }
 
 /**
